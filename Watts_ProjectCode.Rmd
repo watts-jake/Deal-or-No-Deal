@@ -1,0 +1,294 @@
+---
+title: "Deal or No Deal"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading packages and data
+
+```{r}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(plm)
+library(car)
+library(mgcv)
+library(gridExtra)
+
+df <- read_excel("/Users/jake/Desktop/Applied Statistics II/Deal_Or_No_Deal.xls", sheet = "US")
+df2 <- read_excel("/Users/jake/Desktop/Applied Statistics II/Deal_Or_No_Deal.xls", sheet = "USX")
+```
+
+CLeaning df
+
+```{r}
+case_values <- colnames(df[12:37]) %>% as.integer()
+df$cases_remaining <- rowSums(df[, 12:37])
+
+for (i in 1:nrow(df)){
+  df[i, 12:37] <- df[i, 12:37] * case_values
+}
+
+df$exp_value <- rowSums(df[, 12:37]) / df$cases_remaining
+
+df$max <- NA
+for (i in 1:nrow(df)){
+  df[i, "max"] <- df[i, 12:37] %>% max()
+}
+
+df$rms <- sqrt(rowSums((df[, 12:37])^2) / df$cases_remaining)
+
+df <- df[,c(3:11, 38:41)]
+colnames(df)[5:9] <- c("stop_round","amount_won", "round", "deal_nodeal", "bank_offer")
+```
+
+CLeaning df2
+
+```{r}
+df2 <- df2[-which(is.na(df2$`ID Number`)), ]
+df2[which(df2$Name == "Cindy"), "Name"] <- "Cindy2"
+
+case_values2 <- colnames(df2[12:37]) %>% as.integer()
+df2$cases_remaining <- rowSums(df2[, 12:37])
+
+for (i in 1:nrow(df2)){
+  df2[i, 12:37] <- df2[i, 12:37] * case_values2
+}
+
+df2$exp_value <- rowSums(df2[, 12:37]) / df2$cases_remaining
+
+df2$max <- NA
+for (i in 1:nrow(df2)){
+  df2[i, "max"] <- df2[i, 12:37] %>% max()
+}
+
+df2$rms <- sqrt(rowSums((df2[, 12:37])^2) / df2$cases_remaining)
+
+df2 <- df2[,c(3:11, 38:41)]
+colnames(df2)[5:9] <- c("stop_round","amount_won", "round", "deal_nodeal", "bank_offer")
+```
+
+Joining df and df2
+
+```{r}
+df <- full_join(df, df2, by = colnames(df))
+
+df$exp_sq <- (df$exp_value)^2
+df$round <- df$round %>% as.factor()
+```
+
+Splitting into training and tetsing
+
+```{r}
+set.seed(23)
+ppl <- df$Name %>% unique()
+ppl_count <- ppl %>% length()
+index2 <- sort(sample(ppl_count, ppl_count*.7))
+train_names <- ppl[index2]
+
+train2 <- df[which(df$Name %in% train_names), ]
+test2 <- df[-which(df$Name %in% train_names), ]
+```
+
+EDA
+
+```{r}
+col4 = colorRampPalette(c("black", "darkgrey", "grey", "#CFB87C"))
+corrplot(cor(train2[,c(4:6,9:14)]), method = "ellipse", col = col4(100), addCoef.col = "black", tl.col = "black")
+
+pairs(train2[,c(4:6,9:14)], main = "Data", pch = 21, bg = c("blue"))
+```
+
+```{r}
+ggplot(train2, aes(exp_value, bank_offer)) + 
+  geom_point() + 
+  xlab("Expected Value") +
+  ylab("Bank Offer") +
+  ggtitle("The Banker Tends to Make Offers Lower than the Expected Value") +
+  geom_abline(slope = 1, intercept = 0, lty = 2, col = "red") +
+  theme_bw()
+```
+
+```{r}
+train2$diff <- train2$bank_offer - train2$exp_value
+
+ggplot(train2, aes(x = round, y = diff)) +
+  geom_boxplot() +
+  xlab("Round") +
+  ylab("Bank Offer - Expected Value") +
+  ggtitle("The Bank Offer Gets Closer to the Expected Value in Later Rounds") +
+  theme_bw()
+```
+
+```{r}
+train2$diff <- train2$bank_offer - train2$exp_value
+agg <- aggregate(train2$diff, list(train2$round), mean)
+agg2 <- aggregate(train2$diff, list(train2$round), sd)
+
+ggplot(agg, aes(Group.1, x)) + 
+  geom_point() +
+  xlab("Round") +
+  ylab("Mean of Difference") +
+  theme_bw()
+
+ggplot(agg2, aes(Group.1, x)) + 
+  geom_point() +
+  xlab("Round") +
+  ylab("SD of Difference") +
+  theme_bw()
+```
+
+Testing linear models
+
+```{r}
+lmod <- lm(bank_offer ~ I(exp_value^2), train2)
+summary(lmod)
+
+lmod2 <- lm(bank_offer ~ I(exp_value^2) + round, train2)
+summary(lmod2)
+
+lmod3 <- lm(bank_offer ~ I(exp_value^2) + round + Gender, train2)
+summary(lmod3)
+
+lmod4 <- lm(bank_offer ~ I(exp_value^2) + round + max, train2)
+summary(lmod4)
+
+anova(lmod2, lmod3)
+
+fixed <- plm(bank_offer ~ I(exp_value^2), data=train2, index=c("Name"), model="within")
+summary(fixed)
+```
+
+Online Model used in paper
+
+```{r}
+online1 <- lm(bank_offer ~ exp_value + I(exp_value^2) + cases_remaining + I(cases_remaining^2) + max, train2)
+summary(online1)
+
+plot(online1)
+```
+
+Online Model created for the british verison of the show
+
+```{r}
+online2 <- lm(bank_offer ~ rms, train2)
+summary(online2)
+plot(online2)
+```
+
+GAM model
+
+```{r}
+modGAM <- gam(bank_offer ~ s(exp_value) + round, data=train2)
+summary(modGAM)
+plot(modGAM,main = "GAM Smoothing Spline", xlab ="Expected Value", ylab = "Banker's Offer")
+
+res = residuals(modGAM, type="deviance") #compute the deviance residuals
+
+#residual and QQ plot
+par(mfrow=c(1,2))
+plot(predict(modGAM, type = "link"), res, main = "Residuals vs Fitted Values", xlab ="Fitted Values", ylab = "Residuals")
+abline(h=0, lty=2)
+qqnorm(res)
+qqline(res)
+```
+
+MSPE for linear model, GAM, online model 1 and online model 2
+
+```{r}
+y = test2$bank_offer
+
+y_hat1 = predict(lmod2, newdata = test2)
+mspe1 = mean((y - y_hat1)^2); mspe1
+
+y_hat2 = predict(modGAM, newdata = test2)
+mspe2 = mean((y - y_hat2)^2); mspe2
+
+y_hat3 = predict(online1, newdata = test2)
+mspe3 = mean((y - y_hat3)^2); mspe3
+
+y_hat4 = predict(online2, newdata = test2)
+mspe4 = mean((y - y_hat4)^2); mspe4
+```
+
+GAM predictions vs online model predictions
+
+```{r}
+p1 <- ggplot(test2, aes(predict(modGAM, newdata = test2), bank_offer)) + 
+  geom_point() + 
+  geom_abline(slope=1) +
+  xlab("Predicted Value") +
+  ylab("Actual Value") +
+  ggtitle("Model 1: Actual vs Predicted Offer") +
+  theme_bw()
+
+p2 <- ggplot(test2, aes((predict(online1, newdata = test2)), bank_offer)) + 
+  geom_point() + 
+  geom_abline(slope=1) +
+  xlab("Predicted Value") +
+  ylab("Actual Value") +
+  ggtitle("Model 2: Actual vs Predicted Offer") +
+  theme_bw()
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+testing other non-parametric models
+
+```{r}
+plot(train2$bank_offer ~ train2$exp_value, pch = 16, cex = 0.8, col = alpha("darkgrey", 0.9))
+lines(ksmooth(train2$exp_value, train2$bank_offer, kernel = "normal", bandwidth =  65000))
+
+plot(train2$bank_offer ~ train2$exp_value, pch = 16, cex = 0.8, col = alpha("darkgrey", 0.9))
+lines(smooth.spline(train2$exp_value, train2$bank_offer, spar = 1.1))
+smooth_mod <- smooth.spline(train2$exp_value, train2$bank_offer, spar = 1.1)
+
+ggplot(train2, aes(x = exp_value, y = bank_offer)) + 
+    geom_point() +
+    geom_smooth(method = "loess", formula = "y ~ x", color = "blue", span = .5)
+
+lr <- loess(train2$bank_offer ~ exp_value, train2, span = 0.5)
+summary(lr)
+```
+
+mspe for other non-parametric models, loess is the best smoothing spline but GAM overall best because I can include addtional variables
+
+```{r}
+yhat_gam <- predict(modGAM, newdata = test2)
+mspe1 = mean((y - yhat_gam)^2); mspe1
+
+yhat_ks <- ksmooth(train2$bank_offer, train2$exp_value, kernel = "normal", 65000, x.points = test2$exp_value)
+mspe2 <- mean((y - yhat_ks$y)^2); mspe2
+
+yhat_ss <- predict(smooth_mod, x = test2$exp_value)
+mspe3 <- mean((y - yhat_ss$y)^2); mspe3
+
+yhat_loess <- predict(lr, newdata = test2$exp_value)
+mspe4 <- mean((y - yhat_loess)^2); mspe4
+
+min(mspe1, mspe2, mspe3, mspe4)
+```
+
+loess residuals
+
+```{r}
+res <- residuals(lr, type="deviance")
+summary(lr)
+
+plot(predict(lr, type = "link"), res)
+abline(h=0, lty=2)
+
+df <- data.frame(predict(lr, type = "link"), res)
+colnames(df)[1] <- "x"
+
+ggplot(df, aes(x = x, y = res)) + 
+    geom_point() + 
+    xlab("Fitted") +
+    geom_smooth(method = "loess", formula = 'y ~ x', se = F, col = "red") +
+    ylab("Residuals") +
+    theme_bw()
+```
